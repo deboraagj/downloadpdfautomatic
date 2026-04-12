@@ -1,0 +1,39 @@
+import chromadb
+from langchain_community.document_loaders import PyPDFLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.embeddings import SentenceTransformerEmbeddings
+
+# 1. Carregar o PDF
+loader = PyPDFLoader("seu_arquivo.pdf")
+paginas = loader.load()
+
+# 2. Fragmentar o texto (Chunking)
+# Isso é vital para o banco vetorial não se perder em textos longos demais
+text_splitter = RecursiveCharacterTextSplitter(
+    chunk_size=1000, 
+    chunk_overlap=100
+)
+docs = text_splitter.split_documents(paginas)
+
+# 3. Configurar o Cliente ChromaDB (Persistente)
+client = chromadb.PersistentClient(path="./meu_chroma_db")
+
+# 4. Criar ou selecionar uma coleção
+# O Chroma cuidará dos embeddings automaticamente se usarmos uma função de embedding
+from chromadb.utils import embedding_functions
+default_ef = embedding_functions.DefaultEmbeddingFunction()
+
+colecao = client.get_or_create_collection(
+    name="documentos_pdf", 
+    embedding_function=default_ef
+)
+
+# 5. Adicionar ao Banco
+for i, doc in enumerate(docs):
+    colecao.add(
+        ids=[f"id_{i}"],
+        documents=[doc.page_content],
+        metadatas=[{"pagina": doc.metadata["page"]}] # Guarda a página de origem
+    )
+
+print("✅ Banco alimentado com sucesso!")
