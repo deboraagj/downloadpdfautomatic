@@ -1,0 +1,133 @@
+import streamlit as st
+import requests
+from bs4 import BeautifulSoup
+import os
+import re
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.service import Service
+import time
+import urllib.parse
+
+BASE_URL = "https://www.gov.br"
+headers = {"User-Agent": "Mozilla/5.0"}
+
+# =========================
+# CONFIGURAÇÃO DE PASTAS
+# =========================
+# 1. Descobre onde o app.py está salvo (pasta 'backend')
+DIRETORIO_ATUAL = os.path.dirname(os.path.abspath(__file__))
+
+# 2. Volta uma pasta (..) e aponta para 'loaderpdf/pdfs'
+output_dir = os.path.abspath(os.path.join(DIRETORIO_ATUAL, "..", "loaderpdf", "pdfs"))
+
+# 3. Garante que a pasta exista (cria se precisar)
+os.makedirs(output_dir, exist_ok=True)
+
+# =========================
+# FUNÇÕES DE BUSCA
+# =========================
+def get_links_requests(url):
+    st.write("🔎 Tentando método rápido (requests)...")
+    res = requests.get(url, headers=headers)
+    soup = BeautifulSoup(res.text, "html.parser")
+    links = []
+    for a in soup.find_all("a", href=True):
+        if "caderno-" in a["href"]:
+            link = a["href"]
+            if link.startswith("/"):
+                link = BASE_URL + link
+            if link not in links:
+                links.append(link)
+    return links
+
+def get_links_selenium(url):
+    st.write("🤖 Site bloqueou. Usando método avançado (Selenium)...")
+    service = Service("chromedriver.exe") # Lembre-se de ter o chromedriver na mesma pasta
+    driver = webdriver.Chrome(service=service)
+    driver.get(url)
+    time.sleep(5)
+    elements = driver.find_elements(By.TAG_NAME, "a")
+    links = []
+    for el in elements:
+        href = el.get_attribute("href")
+        if href and "caderno-" in href:
+            if href not in links:
+                links.append(href)
+    driver.quit()
+    return links
+
+# =========================
+# INTERFACE DO SITE
+# =========================
+st.title("📥 Baixador de PDFs Massivo")
+st.markdown("Insira o link da página do Gov.br abaixo para baixar todos os cadernos disponíveis.")
+
+url_input = st.text_input(
+    "URL da página:", 
+    value="https://www.gov.br/anvisa/pt-br/centraisdeconteudo/publicacoes/servicosdesaude/manuais/cadernos-de-seguranca-do-paciente-e-qualidade-em-servicos-de-saude-2024-versoes-preliminares-nao-finalizadas-aguardando-o-envio-de-sugestoes"
+)
+
+if st.button("🚀 Iniciar Download"):
+    
+    with st.spinner("Procurando os links na página..."):
+        links = get_links_requests(url_input)
+        
+        if not links:
+            links = get_links_selenium(url_input)
+
+    if not links:
+        st.error("❌ Nenhum caderno encontrado nessa página.")
+    else:
+        st.success(f"📚 {len(links)} cadernos encontrados! Começando o download...")
+
+        barra_progresso = st.progress(0)
+        
+        for i, url_pdf in enumerate(links):
+            res = requests.get(url_pdf, headers=headers)
+            soup = BeautifulSoup(res.text, "html.parser")
+            
+            download_link = None
+            for a in soup.find_all("a", href=True):
+                if "@@download" in a["href"]:
+                    download_link = a["href"]
+                    break
+
+            if download_link:
+                if download_link.startswith("/"):
+                    download_link = BASE_URL + download_link
+                
+                pdf = requests.get(download_link, headers=headers)
+                
+                filename = None
+                
+                # Tenta pegar o nome original do cabeçalho do servidor de forma mais flexível
+                if "content-disposition" in pdf.headers:
+                    match = re.findall(r'filename\*?=(?:UTF-8\'\')?["\']?([^;"\']+)', pdf.headers["content-disposition"], re.IGNORECASE)
+                    if match:
+                        filename = urllib.parse.unquote(match[0])
+                
+                # PLANO B: Pega o nome diretamente do final da URL
+                if not filename or filename == "@@download":
+                    nome_da_url = url_pdf.rstrip('/').split('/')[-1]
+                    filename = f"{nome_da_url}.pdf"
+
+                # Garante que tenha a extensão .pdf
+                if not filename.lower().endswith(".pdf"):
+                    filename += ".pdf"
+                
+                filename = filename.replace("%20", " ") # Remove %20 se sobrar algum
+                filepath = os.path.join(output_dir, filename)
+                
+                # Salva o arquivo
+                with open(filepath, "wb") as f:
+                    f.write(pdf.content)
+                
+                st.write(f"✅ Salvo: `{filename}`")
+            
+            # Atualiza a barra
+            progresso_atual = int(((i + 1) / len(links)) * 100)
+            barra_progresso.progress(progresso_atual)
+
+        st.balloons()
+        st.success("🎉 TODOS OS DOWNLOADS FORAM FINALIZADOS!")
